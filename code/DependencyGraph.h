@@ -13,8 +13,10 @@
 #define MASTER 0
 #define FROM_MASTER_PARTITION 1
 #define WORKER_RECEIVED_PARTITION 2
-#define FROM_MASTER_INITIALIZE 3
-#define WORKER_INIT_COMPLETE 4
+#define FROM_MASTER_PART_RECORD 3
+#define WORKER_RECEIVED_PART_RECORD 4
+#define FROM_MASTER_INITIALIZE 5
+#define WORKER_INIT_COMPLETE 6
 
 using namespace std;
 
@@ -33,6 +35,7 @@ class DependencyGraph {
     vector<int64_t> count_;     // degree of each node-pair (in dependency graph, not original graph), eg. [d(v0-v0, d(v0-v1), ...)]  TODO: distribute?
     vector<boost::dynamic_bitset<>> is_boundarys_;
     vector<unordered_map<uint32_t, float>> sim_values_;
+    vector<unordered_map<uint32_t, boost::dynamic_bitset<>>> part_record_;
     vector<uint32_t> node_label_1_;
     vector<uint32_t> node_label_2_;
 
@@ -49,6 +52,8 @@ class DependencyGraph {
     void print_label_mat();
     void worker_receive_partition(GraphNL& graph_1, GraphNL& graph_2);
     void worker_initialize(GraphNL& graph_1, GraphNL& graph_2);
+    void distribute_partition_record();
+    void worker_receive_partition_record(GraphNL& graph_2);
 };
 
 // eg.

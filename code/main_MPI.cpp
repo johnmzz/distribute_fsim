@@ -126,9 +126,12 @@ int main(int argc, char* argv[]) {
             } else if (partition_method == "hdrf") {
                 MPI_Status status;
                 DependencyGraph dependency_graph(graph_1, graph_2, num_partitions, initializer_type);
-                dependency_graph.init_dependency_graph(graph_1, graph_2);
-                dependency_graph.HDRF_partition(graph_1, graph_2);
 
+                // initialize dependency graph
+                dependency_graph.init_dependency_graph(graph_1, graph_2);
+
+                // perform HDRF partition
+                dependency_graph.HDRF_partition(graph_1, graph_2);
                 int64_t replication_count = 0;
                 for (uint32_t i = 1; i <= num_partitions; i++) {
                     int64_t temp;
@@ -138,17 +141,37 @@ int main(int argc, char* argv[]) {
                 }
                 cout << "Total node-pair assigned = " << replication_count << endl;
 
-                cout << "Start initialization..." << endl;
+                // distribute partition records across workers
+                dependency_graph.distribute_partition_record();
+                for (uint32_t i = 1; i <= num_partitions; i++) {
+                    int temp;
+                    MPI_Recv(&temp, 1, MPI_INT, i, WORKER_RECEIVED_PART_RECORD, MPI_COMM_WORLD, &status);
+                }
+                cout << "All workers received their partition records." << endl;
+
+                // values initialization on all workers
+                cout << endl
+                     << "Start initialization..." << endl;
                 for (uint32_t i = 1; i <= num_partitions; i++) {
                     int temp;
                     MPI_Send(&temp, 1, MPI_INT, i, FROM_MASTER_INITIALIZE, MPI_COMM_WORLD);
                 }
-
-                int initialization_complete;
                 for (uint32_t i = 1; i <= num_partitions; i++) {
+                    int initialization_complete;
                     MPI_Recv(&initialization_complete, 1, MPI_INT, i, WORKER_INIT_COMPLETE, MPI_COMM_WORLD, &status);
                 }
                 cout << "Workers initialization completed." << endl;
+
+                /*
+                cout << "Starting computation." << endl;
+                int turn = 1;
+                do {
+                    cout << "***********************round : " << turn << "**********************" << endl;
+                    fracsim.simmat_copy_to(premat);
+                    fracsim.update_simmatrix(premat, w_i, w_o, w_l, num_thus);
+                    turn += 1;
+                } while (!fracsim.diff_relative(premat, EPS) && turn <= MAXTURN);
+                */
             }
             /*
             // create similarity matrix
@@ -222,6 +245,7 @@ int main(int argc, char* argv[]) {
         if (partition_method == "hdrf") {
             DependencyGraph dependency_graph(graph_1, graph_2, num_partitions, initializer_type);
             dependency_graph.worker_receive_partition(graph_1, graph_2);
+            dependency_graph.worker_receive_partition_record(graph_2);
             dependency_graph.worker_initialize(graph_1, graph_2);
             /*
             // printf("Worker processor %s, rank %d out of %d processors\n", processor_name, task_id, num_tasks);

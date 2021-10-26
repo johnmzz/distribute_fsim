@@ -4,7 +4,7 @@ DependencyGraph::DependencyGraph(GraphNL& graph_1, GraphNL& graph_2, uint32_t nu
     lambda = 1.1;  // default value for HDRF
     capacity_ = 0;
     dependency_count_ = 0;
-    node_pairs_count_ = 0;
+    node_pairs_count_ = graph_1.get_num_vertices() * graph_2.get_num_vertices();
     num_partitions_ = num_partitions;
     occupied_.assign(num_partitions, 0);
     node_label_1_ = graph_1.get_vertex_type();
@@ -16,7 +16,8 @@ int64_t DependencyGraph::encode(uint32_t i, uint32_t j, uint32_t offset) {
 }
 
 void DependencyGraph::init_dependency_graph(GraphNL& graph_1, GraphNL& graph_2) {
-    cout << "Initializing dependency graph..." << endl;
+    cout << endl
+         << "Initializing dependency graph..." << endl;
     node_pairs_count_ = graph_1.get_num_vertices() * graph_2.get_num_vertices();
 
     count_.resize(node_pairs_count_, 0);  // to record degree of each node_pair
@@ -83,11 +84,11 @@ void DependencyGraph::init_dependency_graph(GraphNL& graph_1, GraphNL& graph_2) 
     //}
     //cout << endl;
     cout << "Dependency graph initialization completed." << endl;
-    cout << endl;
 }
 
 void DependencyGraph::HDRF_partition(GraphNL& graph_1, GraphNL& graph_2) {
-    cout << "Partitioning using HDRF algorithm..." << endl;
+    cout << endl
+         << "Partitioning using HDRF algorithm..." << endl;
 
     int64_t num_edges = dependency_count_;
     uint32_t bucket;
@@ -453,7 +454,7 @@ void DependencyGraph::worker_initialize(GraphNL& graph_1, GraphNL& graph_2) {
 
     int start_initialize;
     MPI_Recv(&start_initialize, 1, MPI_INT, MASTER, FROM_MASTER_INITIALIZE, MPI_COMM_WORLD, &status);
-    printf("Worker processor %s, rank %d out of %d processors starting to initialize sim values.\n", processor_name, task_id, num_tasks);
+    // printf("Worker processor %s, rank %d out of %d processors starting to initialize sim values.\n", processor_name, task_id, num_tasks);
 
     for (uint32_t i = 0; i < sim_values_.size(); i++) {
         for (auto v : sim_values_[i]) {
@@ -476,4 +477,97 @@ void DependencyGraph::worker_initialize(GraphNL& graph_1, GraphNL& graph_2) {
     int intialization_complete = 1;
     // printf("Worker processor %s, rank %d out of %d processors initialization completed.\n", processor_name, task_id, num_tasks);
     MPI_Send(&intialization_complete, 1, MPI_INT, MASTER, WORKER_INIT_COMPLETE, MPI_COMM_WORLD);
+}
+
+void DependencyGraph::distribute_partition_record() {
+    cout << endl
+         << "Sending workers partition record..." << endl;
+
+    MPI_Status status;
+    int num_tasks;
+    MPI_Comm_size(MPI_COMM_WORLD, &num_tasks);
+    int num_workers = num_tasks - 1;
+
+    uint64_t node_pairs_per_part = node_pairs_count_ / num_workers;
+    uint64_t extra = node_pairs_count_ % num_workers;
+    // cout << node_pairs_per_part << endl;
+    /*
+    cout << "bit set = " << endl;
+    for (int i = 0; i < is_boundarys_.size(); i++) {
+        cout << is_boundarys_[i] << endl;
+    }
+    cout << endl;
+    */
+
+    // for (boost::dynamic_bitset<>::size_type i = 0; i < is_boundarys_[0].size(); ++i) {
+    uint64_t i = 0;
+    uint64_t idx = 0;
+    for (int p = 1; p <= num_workers; p++) {
+        idx += (p <= extra) ? node_pairs_per_part + 1 : node_pairs_per_part;
+        // cout << "Partition " << p << " assigned with " << ((p <= extra) ? node_pairs_per_part + 1 : node_pairs_per_part) << " values, has values: " << endl;
+        for (; i < idx; i++) {
+            // cout << "node_pair " << i << " = ";
+            uint16_t tmp = 0;
+            for (int j = 0; j < is_boundarys_.size(); j++) {
+                tmp = (tmp << 1) | is_boundarys_[j][i];
+                //cout << j << "," << i << "=" << is_boundarys_[j][i] << " ";
+            }
+            // cout << tmp << endl;
+            MPI_Send(&tmp, 1, MPI_UINT16_T, p, FROM_MASTER_PART_RECORD, MPI_COMM_WORLD);
+        }
+        // cout << endl;
+    }
+}
+
+void DependencyGraph::worker_receive_partition_record(GraphNL& graph_2) {
+    int num_tasks, task_id, name_len;
+    char processor_name[MPI_MAX_PROCESSOR_NAME];
+    MPI_Comm_size(MPI_COMM_WORLD, &num_tasks);
+    MPI_Comm_rank(MPI_COMM_WORLD, &task_id);
+    MPI_Get_processor_name(processor_name, &name_len);
+    MPI_Status status;
+    int num_workers = num_tasks - 1;
+    uint64_t node_pairs_per_part = node_pairs_count_ / num_workers;
+    uint64_t extra = node_pairs_count_ % num_workers;
+    uint64_t num_receive = (task_id <= extra) ? node_pairs_per_part + 1 : node_pairs_per_part;
+
+    uint64_t offset;
+    if (task_id <= extra) {
+        offset = (node_pairs_per_part + 1) * (task_id - 1);
+    } else {
+        offset = ((node_pairs_per_part + 1) * extra + node_pairs_per_part * (task_id - extra - 1));
+    }
+    uint32_t u_offset = offset / graph_2.get_num_vertices();
+    uint32_t u_finish = (offset + num_receive) / graph_2.get_num_vertices();
+
+    //if (task_id) {
+    // printf("Worker processor %s, rank %d out of %d processors withh offset %d, starts with index %d, ends with index %d\n", processor_name, task_id, num_tasks, offset, u_offset, u_finish);
+    //}
+
+    part_record_.resize(u_finish - u_offset + 1);
+    uint32_t current_u = 0;
+    for (uint64_t i = offset; i < offset + num_receive; i++) {
+        uint16_t tmp;
+        MPI_Recv(&tmp, 1, MPI_UINT16_T, MASTER, FROM_MASTER_PART_RECORD, MPI_COMM_WORLD, &status);
+        boost::dynamic_bitset<> bs(16, tmp);
+        bs.resize(num_partitions_);
+
+        uint32_t u = i / graph_2.get_num_vertices();
+        uint32_t v = i % graph_2.get_num_vertices();
+
+        part_record_[u - u_offset].insert({v, bs});
+    }
+    /*
+    if (task_id == 2)
+        printf("Worker processor %s, rank %d out of %d processors, partition record = \n", processor_name, task_id, num_tasks, offset);
+    for (int i = 0; i < part_record_.size(); i++) {
+        for (auto v : part_record_[i]) {
+            //if (task_id == 2)
+            //    cout << "(" << i + u_offset << "," << v.first << ") = " << v.second << endl;
+        }
+    }
+    */
+
+    int received_part_record = 1;
+    MPI_Send(&received_part_record, 1, MPI_INT, MASTER, WORKER_RECEIVED_PART_RECORD, MPI_COMM_WORLD);
 }
