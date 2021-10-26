@@ -1,0 +1,14 @@
+Architecture (架构):
+pure MPI, 理由: hybrid hard to implement, performance may be worse (can do case study)
+
+Program structure (程序结构):
+master store graph, allocate tasks
+workers perform calcualtion
+
+问题:
+1. 每个 partition 如何知道 neighbor 在哪
+
+
+1. MPI 实验paper, 如何实现
+2. distributed simrank 如何解决 partition 问题
+3. streaming 时建立 partition

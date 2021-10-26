@@ -1,0 +1,20 @@
+data_path=test_dataset
+result_path=HIN_results
+
+data_path = /import/vldb01/2/scratch/mazhuo
+
+
+host file:
+host1 # Run 1 process on host1
+host2:4 # Run 4 processes on host2
+host3:2 # Run 2 processes on host3
+host4:1 # Run 1 process on host4
+
+run mpi program:
+mpiexec -n 6 -f host_file ./mpi
+
+command:
+mpiexec -n 5 -f host_file ./calsim dataset/ results/ mz_test mz_test identical null sim N 0.4 0.4 0.2 0 32
+
+git token:
+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
