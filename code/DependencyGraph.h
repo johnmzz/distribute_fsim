@@ -17,6 +17,14 @@
 #define WORKER_RECEIVED_PART_RECORD 4
 #define FROM_MASTER_INITIALIZE 5
 #define WORKER_INIT_COMPLETE 6
+#define FROM_MASTER_COPY 7
+#define WORKER_COPY_COMPLETE 8
+#define FROM_MASTER_START_COMPUTE 9
+#define WORKER_COMPUTE_COMPLETE 10
+#define FROM_MASTER_SYNCHRONIZE 11
+#define WORKER_SYNCHRONIZE_COMPLETE 12
+#define FROM_MASTER_AGGRE 13
+#define WORKER_AGGRE_COMPLETE 14
 
 using namespace std;
 
@@ -30,11 +38,13 @@ class DependencyGraph {
     uint32_t num_partitions_;
     int64_t max_size_;
     int64_t min_size_;
+    string simulation_type_;
     InitializerMPI initializer_;
     vector<int64_t> occupied_;  // number of edges in each partition, eg. [p0_num_edges, p1_num_edges, ...]
     vector<int64_t> count_;     // degree of each node-pair (in dependency graph, not original graph), eg. [d(v0-v0, d(v0-v1), ...)]  TODO: distribute?
     vector<boost::dynamic_bitset<>> is_boundarys_;
     vector<unordered_map<uint32_t, float>> sim_values_;
+    vector<unordered_map<uint32_t, float>> pre_values_;
     vector<unordered_map<uint32_t, boost::dynamic_bitset<>>> part_record_;
     vector<uint32_t> node_label_1_;
     vector<uint32_t> node_label_2_;
@@ -44,7 +54,7 @@ class DependencyGraph {
     double compute_partition_score(uint32_t u, uint32_t v, uint32_t i);
 
   public:
-    DependencyGraph(GraphNL& graph_1, GraphNL& graph_2, uint32_t num_partitions, string initializer_type);
+    DependencyGraph(GraphNL& graph_1, GraphNL& graph_2, uint32_t num_partitions, string initializer_type, string simulation_type);
     void init_dependency_graph(GraphNL& graph_1, GraphNL& graph_2);
     void HDRF_partition(GraphNL& graph_1, GraphNL& graph_2);
     void get_vertex_partition(string graph_1_name, string graph_2_name);
@@ -54,6 +64,8 @@ class DependencyGraph {
     void worker_initialize(GraphNL& graph_1, GraphNL& graph_2);
     void distribute_partition_record();
     void worker_receive_partition_record(GraphNL& graph_2);
+    void worker_copy_values();
+    void worker_compute(GraphNL& graph_1, GraphNL& graph_2, float w_i, float w_o, float w_l, string label_constrainted);
 };
 
 // eg.

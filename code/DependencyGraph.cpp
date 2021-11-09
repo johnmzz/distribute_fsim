@@ -1,11 +1,12 @@
 #include "DependencyGraph.h"
-DependencyGraph::DependencyGraph(GraphNL& graph_1, GraphNL& graph_2, uint32_t num_partitions, string initializer_type)
+DependencyGraph::DependencyGraph(GraphNL& graph_1, GraphNL& graph_2, uint32_t num_partitions, string initializer_type, string simulation_type)
     : initializer_(initializer_type, graph_1.get_label_info(), graph_2.get_label_info()) {
     lambda = 1.1;  // default value for HDRF
     capacity_ = 0;
     dependency_count_ = 0;
     node_pairs_count_ = graph_1.get_num_vertices() * graph_2.get_num_vertices();
     num_partitions_ = num_partitions;
+    simulation_type_ = simulation_type;
     occupied_.assign(num_partitions, 0);
     node_label_1_ = graph_1.get_vertex_type();
     node_label_2_ = graph_2.get_vertex_type();
@@ -95,7 +96,7 @@ void DependencyGraph::HDRF_partition(GraphNL& graph_1, GraphNL& graph_2) {
     max_size_ = 0;
     min_size_ = 0;
 
-    ofstream fout("dataset/mz_test/" + graph_1.get_graph_name() + "_" + graph_2.get_graph_name() + "_dependency_graph_" + to_string(num_partitions_) + ".txt");
+    // ofstream fout("dataset/mz_test/" + graph_1.get_graph_name() + "_" + graph_2.get_graph_name() + "_dependency_graph_" + to_string(num_partitions_) + ".txt");
     for (uint32_t i = 0; i < graph_1.get_num_vertices(); i++) {
         auto adj_out_i = graph_1.get_out_neighbors_list(i);
         auto adj_in_i = graph_1.get_in_neighbors_list(i);
@@ -147,7 +148,7 @@ void DependencyGraph::HDRF_partition(GraphNL& graph_1, GraphNL& graph_2) {
                     min_size_++;
                 }
 
-                fout << from << " " << to << " " << bucket << endl;
+                // fout << from << " " << to << " " << bucket << endl;
                 // cout << "max_size = " << max_size_ << ", min_size = " << min_size_ << endl;
 
                 // cout << "sending (" << i << "," << j << ") to bucket " << bucket << endl;
@@ -168,7 +169,7 @@ void DependencyGraph::HDRF_partition(GraphNL& graph_1, GraphNL& graph_2) {
         MPI_Send(&terminate, 1, MPI_INT64_T, i, FROM_MASTER_PARTITION, MPI_COMM_WORLD);
         // cout << "sending -1 to bucket" << i - 1 << endl;
     }
-    fout.close();
+    // fout.close();
     cout << "Partitioning complete." << endl;
 }
 
@@ -570,4 +571,193 @@ void DependencyGraph::worker_receive_partition_record(GraphNL& graph_2) {
 
     int received_part_record = 1;
     MPI_Send(&received_part_record, 1, MPI_INT, MASTER, WORKER_RECEIVED_PART_RECORD, MPI_COMM_WORLD);
+}
+
+void DependencyGraph::worker_copy_values() {
+    int num_tasks, task_id, name_len;
+    char processor_name[MPI_MAX_PROCESSOR_NAME];
+    MPI_Comm_size(MPI_COMM_WORLD, &num_tasks);
+    MPI_Comm_rank(MPI_COMM_WORLD, &task_id);
+    MPI_Get_processor_name(processor_name, &name_len);
+    MPI_Status status;
+
+    int start_copy;
+    MPI_Recv(&start_copy, 1, MPI_INT, MASTER, FROM_MASTER_COPY, MPI_COMM_WORLD, &status);
+    // printf("Worker processor %s, rank %d out of %d processors start copying...\n", processor_name, task_id);
+
+    pre_values_.assign(sim_values_.begin(), sim_values_.end());
+
+    /*
+    if (task_id == 1) {
+        cout << pre_values_.size() << endl;
+        for (int i = 0; i < pre_values_.size(); i++) {
+            cout << i << ": ";
+            for (auto v : pre_values_[i]) {
+                cout << "(" << v.first << "," << v.second << "), ";
+            }
+            cout << endl;
+        }
+        print_label_mat();
+    }
+    */
+
+    int copy_completed = 1;
+    MPI_Send(&copy_completed, 1, MPI_INT, MASTER, WORKER_COPY_COMPLETE, MPI_COMM_WORLD);
+}
+
+void DependencyGraph::worker_compute(GraphNL& graph_1, GraphNL& graph_2, float w_i, float w_o, float w_l, string label_constrainted) {
+    int num_tasks, task_id, name_len;
+    char processor_name[MPI_MAX_PROCESSOR_NAME];
+    MPI_Comm_size(MPI_COMM_WORLD, &num_tasks);
+    MPI_Comm_rank(MPI_COMM_WORLD, &task_id);
+    MPI_Get_processor_name(processor_name, &name_len);
+    MPI_Status status;
+    int num_workers = num_tasks - 1;
+    uint64_t node_pairs_per_part = node_pairs_count_ / num_workers;
+    uint64_t extra = node_pairs_count_ % num_workers;
+    uint64_t num_receive = (task_id <= extra) ? node_pairs_per_part + 1 : node_pairs_per_part;
+
+    uint64_t offset;
+    if (task_id <= extra) {
+        offset = (node_pairs_per_part + 1) * (task_id - 1);
+    } else {
+        offset = ((node_pairs_per_part + 1) * extra + node_pairs_per_part * (task_id - extra - 1));
+    }
+    uint32_t u_offset = offset / graph_2.get_num_vertices();
+
+    // *********************************** Local computation round ***********************************
+    int start_compute;
+    MPI_Recv(&start_compute, 1, MPI_INT, MASTER, FROM_MASTER_COPY, MPI_COMM_WORLD, &status);
+    // printf("Worker processor %s, rank %d out of %d processors start computing...\n", processor_name, task_id);
+
+    vector<uint32_t> in_degree_vec1 = graph_1.get_in_degree_vec();
+    vector<uint32_t> out_degree_vec1 = graph_1.get_out_degree_vec();
+    vector<uint32_t> in_degree_vec2 = graph_2.get_in_degree_vec();
+    vector<uint32_t> out_degree_vec2 = graph_2.get_out_degree_vec();
+
+    for (uint32_t i = 0; i < sim_values_.size(); i++) {
+        uint32_t u = i + u_offset;
+        NeighborsMap map_i_out = graph_1.get_out_neighbors_map(u);
+        NeighborsMap map_i_in = graph_1.get_in_neighbors_map(u);
+        for (auto v : sim_values_[i]) {
+            float label_sim = 0.0, in_neighbor_sim = 0.0, out_neighbor_sim = 0.0;
+            NeighborsMap map_j_out = graph_2.get_out_neighbors_map(v.first);
+            NeighborsMap map_j_in = graph_2.get_in_neighbors_map(v.first);
+
+            vector<uint32_t> neighbors_out_u, neighbors_out_v, neighbors_in_u, neighbors_in_v;
+            if (label_constrainted != "Y") {
+                neighbors_out_u = graph_1.get_out_neighbors_list(u);
+                neighbors_out_v = graph_2.get_out_neighbors_list(v.first);
+                neighbors_in_u = graph_1.get_in_neighbors_list(u);
+                neighbors_in_v = graph_2.get_in_neighbors_list(v.first);
+            }
+
+            if (neighbors_out_u.size() == 0 && neighbors_out_v.size() == 0) {
+                out_neighbor_sim = 1;
+            } else if (neighbors_out_u.size() == 0 || neighbors_out_v.size() == 0) {
+                out_neighbor_sim = 0;
+            } else {
+                float numerator = 0.0;
+                if (simulation_type_ == "sim") {
+                    float weight;
+                    vector<uint32_t>::iterator uItr, vItr;
+                    for (uItr = neighbors_out_u.begin(); uItr != neighbors_out_u.end(); uItr++) {
+                        if (*uItr - u_offset < 0 || *uItr - u_offset >= num_receive) {
+                            // node-pair (u,v) not in this partition
+                            continue;
+                        }
+                        float max_score = 0.0;
+                        for (vItr = neighbors_out_v.begin(); vItr != neighbors_out_v.end(); vItr++) {
+                            if (sim_values_[*uItr - u_offset].find(*vItr) == sim_values_[*uItr - u_offset].end()) {
+                                // if node-pair (u,v) not in this partition (v not in u's value list)
+                                continue;
+                            }
+                            weight = pre_values_[*uItr - u_offset][*vItr];
+                            if (weight > max_score) {
+                                max_score = weight;
+                            }
+                        }
+                        numerator += max_score;
+                    }
+                } else if (simulation_type_ == "bisim") {
+                } else if (simulation_type_ == "dpsim") {
+                } else if (simulation_type_ == "bjsim") {
+                } else {
+                    cout << "Incorrect simulation type!" << endl;
+                    exit(0);
+                }
+                out_neighbor_sim = numerator;
+            }
+            // sim_values_[u-u_offset][v].first = out_neighbor_sim;
+
+            if (neighbors_in_u.size() == 0 && neighbors_in_v.size() == 0) {
+                in_neighbor_sim = 1;
+            } else if (neighbors_in_u.size() == 0 || neighbors_out_u.size() == 0) {
+                in_neighbor_sim = 0;
+            } else {
+                float numerator = 0.0;
+                if (simulation_type_ == "sim") {
+                    float weight;
+                    vector<uint32_t>::iterator uItr, vItr;
+                    for (uItr = neighbors_in_u.begin(); uItr != neighbors_in_u.end(); uItr++) {
+                        if (*uItr - u_offset < 0 || *uItr - u_offset >= num_receive) {
+                            // node-pair (u,v) not in this partition
+                            continue;
+                        }
+                        float max_score = 0.0;
+                        for (vItr = neighbors_in_v.begin(); vItr != neighbors_in_v.end(); vItr++) {
+                            if (sim_values_[*uItr - u_offset].find(*vItr) == sim_values_[*uItr - u_offset].end()) {
+                                // if node-pair (u,v) not in this partition (v not in u's value list)
+                                continue;
+                            }
+                            weight = pre_values_[*uItr - u_offset][*vItr];
+                            if (weight > max_score) {
+                                max_score = weight;
+                            }
+                        }
+                        numerator += max_score;
+                    }
+                } else if (simulation_type_ == "bisim") {
+                } else if (simulation_type_ == "dpsim") {
+                } else if (simulation_type_ == "bjsim") {
+                } else {
+                    cout << "Incorrect simulation type!" << endl;
+                    exit(0);
+                }
+                in_neighbor_sim = numerator;
+            }
+            // sim_values_[i][v].second = in_neighbor_sim;
+        }
+    }
+
+    int compute_complete = 1;
+    MPI_Send(&compute_complete, 1, MPI_INT, MASTER, WORKER_COMPUTE_COMPLETE, MPI_COMM_WORLD);
+    // *********************************** Synchronization round ***********************************
+    for (int p = 1; p <= num_partitions_; p++) {
+        int synch_id;
+        MPI_Recv(&synch_id, 1, MPI_INT, MASTER, FROM_MASTER_SYNCHRONIZE, MPI_COMM_WORLD, &status);
+
+        if (synch_id == task_id) {
+            // do computation, ask others
+        } else {
+            // receive queries from others
+        }
+        MPI_Send(&synch_id, 1, MPI_INT, MASTER, WORKER_SYNCHRONIZE_COMPLETE, MPI_COMM_WORLD);
+    }
+
+    // *********************************** Local aggregation round ***********************************
+    for (uint32_t i = 0; i < sim_values_.size(); i++) {
+        uint32_t u = i + u_offset;
+        for (auto v : sim_values_[i]) {
+            // sim_values_[i][v.first].first = sim_values_[i][v.first].first / demon(out_deg_vec_1[u], out_deg_vec_2[v.first]);
+            // sim_values_[i][v.first].second = sim_values[i][v.first].second / demon(in_deg_vec_1[u], in_deg_vec_2[v.first]);
+            // label_sim = labelmat_[node_label_1_[u]][node_label_2_[v.first]];
+
+            // final value
+            // sim_values_[i][v.first].first = w_o * sim_values_[i][v.first].first + w_i * sim_values_[i][v.first].second + w_l * label_sim;
+        }
+    }
+
+    int aggre_complete = 1;
+    MPI_Send(&aggre_complete, 1, MPI_INT, MASTER, WORKER_AGGRE_COMPLETE, MPI_COMM_WORLD);
 }

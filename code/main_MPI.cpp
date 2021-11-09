@@ -92,40 +92,42 @@ int main(int argc, char* argv[]) {
             InitializerMPI initializer(initializer_type, graph_1.get_label_info(), graph_2.get_label_info());
 
             if (partition_method == "random") {
+                MPI_Status status;
+                DependencyGraph dependency_graph(graph_1, graph_2, num_partitions, initializer_type, simulation_type);
                 // prepare to initialize sim matrix and allocate values by naively divide into chunk
-                float value;
-                uint32_t num_workers, avg_row, rows, extra, count;
-                vector<uint32_t> count_per_partition(num_tasks);
+                //float value;
+                //uint32_t num_workers, avg_row, rows, extra, count;
+                //vector<uint32_t> count_per_partition(num_tasks);
 
-                num_workers = num_tasks - 1;
-                avg_row = graph_1.get_num_vertices() / num_workers;
-                extra = graph_1.get_num_vertices() % num_workers;
-                cout << "Rows per partition: " << avg_row << ", extra: " << extra << endl;
+                //num_workers = num_tasks - 1;
+                //avg_row = graph_1.get_num_vertices() / num_workers;
+                //extra = graph_1.get_num_vertices() % num_workers;
+                //cout << "Rows per partition: " << avg_row << ", extra: " << extra << endl;
 
-                VertexType g1_vertex_labels = graph_1.get_vertex_type();
-                VertexType g2_vertex_labels = graph_2.get_vertex_type();
+                //VertexType g1_vertex_labels = graph_1.get_vertex_type();
+                //VertexType g2_vertex_labels = graph_2.get_vertex_type();
 
                 // initialize sim matrix based on label values
-                vector<vector<float>> sim_matrix(graph_1.get_num_vertices(), vector<float>(graph_2.get_num_vertices(), 0));
-                for (int i = 0; i < graph_1.get_num_vertices(); i++) {
-                    for (int j = 0; j < graph_2.get_num_vertices(); j++) {
-                        sim_matrix[i][j] = initializer.get_sim_value(g1_vertex_labels[i], g2_vertex_labels[j]);
-                    }
-                }
+                //vector<vector<float>> sim_matrix(graph_1.get_num_vertices(), vector<float>(graph_2.get_num_vertices(), 0));
+                //for (int i = 0; i < graph_1.get_num_vertices(); i++) {
+                //    for (int j = 0; j < graph_2.get_num_vertices(); j++) {
+                //        sim_matrix[i][j] = initializer.get_sim_value(g1_vertex_labels[i], g2_vertex_labels[j]);
+                //    }
+                //}
 
-                int offset = 0;
-                for (int worker = 1; worker <= num_workers; worker++) {
-                    rows = (worker <= extra) ? avg_row + 1 : avg_row;
-                    MPI_Send(&offset, 1, MPI_INT, worker, FROM_MASTER_PARTITION, MPI_COMM_WORLD);
-                    MPI_Send(&rows, 1, MPI_INT, worker, FROM_MASTER_PARTITION, MPI_COMM_WORLD);
-                    for (int i = offset; i < sim_matrix.size(); i++) {
-                        MPI_Send(&sim_matrix[i][0], graph_2.get_num_vertices(), MPI_FLOAT, worker, FROM_MASTER_PARTITION, MPI_COMM_WORLD);
-                    }
-                    offset += rows;
-                }
+                //int offset = 0;
+                //for (int worker = 1; worker <= num_workers; worker++) {
+                //    rows = (worker <= extra) ? avg_row + 1 : avg_row;
+                //    MPI_Send(&offset, 1, MPI_INT, worker, FROM_MASTER_PARTITION, MPI_COMM_WORLD);
+                //    MPI_Send(&rows, 1, MPI_INT, worker, FROM_MASTER_PARTITION, MPI_COMM_WORLD);
+                //    for (int i = offset; i < sim_matrix.size(); i++) {
+                //        MPI_Send(&sim_matrix[i][0], graph_2.get_num_vertices(), MPI_FLOAT, worker, FROM_MASTER_PARTITION, MPI_COMM_WORLD);
+                //    }
+                //    offset += rows;
+                //}
             } else if (partition_method == "hdrf") {
                 MPI_Status status;
-                DependencyGraph dependency_graph(graph_1, graph_2, num_partitions, initializer_type);
+                DependencyGraph dependency_graph(graph_1, graph_2, num_partitions, initializer_type, simulation_type);
 
                 // initialize dependency graph
                 dependency_graph.init_dependency_graph(graph_1, graph_2);
@@ -150,8 +152,7 @@ int main(int argc, char* argv[]) {
                 cout << "All workers received their partition records." << endl;
 
                 // values initialization on all workers
-                cout << endl
-                     << "Start initialization..." << endl;
+                cout << "\nStart initialization..." << endl;
                 for (uint32_t i = 1; i <= num_partitions; i++) {
                     int temp;
                     MPI_Send(&temp, 1, MPI_INT, i, FROM_MASTER_INITIALIZE, MPI_COMM_WORLD);
@@ -162,16 +163,65 @@ int main(int argc, char* argv[]) {
                 }
                 cout << "Workers initialization completed." << endl;
 
-                /*
-                cout << "Starting computation." << endl;
+                cout << "\nStarting computation." << endl;
                 int turn = 1;
                 do {
                     cout << "***********************round : " << turn << "**********************" << endl;
-                    fracsim.simmat_copy_to(premat);
-                    fracsim.update_simmatrix(premat, w_i, w_o, w_l, num_thus);
+
+                    cout << "Workers copy sim values" << endl;
+                    for (uint32_t i = 1; i <= num_partitions; i++) {
+                        int temp;
+                        MPI_Send(&temp, 1, MPI_INT, i, FROM_MASTER_COPY, MPI_COMM_WORLD);
+                    }
+                    for (uint32_t i = 1; i <= num_partitions; i++) {
+                        int temp;
+                        MPI_Recv(&temp, 1, MPI_INT, i, WORKER_COPY_COMPLETE, MPI_COMM_WORLD, &status);
+                    }
+                    cout << "Workers have copied their sim values." << endl;
+
+                    // out-neighbors
+                    cout << "Workers start computing..." << endl;
+                    for (uint32_t i = 1; i <= num_partitions; i++) {
+                        int start_compute = 1;
+                        MPI_Send(&start_compute, 1, MPI_INT, i, FROM_MASTER_START_COMPUTE, MPI_COMM_WORLD);
+                    }
+                    for (uint32_t i = 1; i <= num_partitions; i++) {
+                        int temp;
+                        MPI_Recv(&temp, 1, MPI_INT, i, WORKER_COMPUTE_COMPLETE, MPI_COMM_WORLD, &status);
+                    }
+                    cout << "Workers have finished all local computations." << endl;
+
+                    cout << "Start synchronzation: " << endl;
+                    for (int i = 1; i <= num_partitions; i++) {
+                        for (uint32_t j = 1; j <= num_partitions; j++) {
+                            cout << "Synchronizing worker " << i << "...\n";
+                            int synch_number = i;
+                            MPI_Send(&synch_number, 1, MPI_INT, j, FROM_MASTER_START_COMPUTE, MPI_COMM_WORLD);
+                        }
+                        for (uint32_t j = 1; j <= num_partitions; j++) {
+                            int synch_number;
+                            MPI_Recv(&synch_number, 1, MPI_INT, j, WORKER_SYNCHRONIZE_COMPLETE, MPI_COMM_WORLD, &status);
+                        }
+                        cout << "Worker " << i << " finished synchronization." << endl;
+                    }
+                    cout << "All workers have finihsed synchronization." << endl;
+
+                    cout << "Workers start final computation..." << endl;
+                    for (uint32_t i = 1; i <= num_partitions; i++) {
+                        int start_aggre = 1;
+                        MPI_Send(&start_aggre, 1, MPI_INT, i, FROM_MASTER_AGGRE, MPI_COMM_WORLD);
+                    }
+                    for (uint32_t i = 1; i <= num_partitions; i++) {
+                        int temp;
+                        MPI_Recv(&temp, 1, MPI_INT, i, WORKER_AGGRE_COMPLETE, MPI_COMM_WORLD, &status);
+                    }
+                    cout << "Workers have finished all computations." << endl;
+
+                    // TODO: calculate difference
+
                     turn += 1;
-                } while (!fracsim.diff_relative(premat, EPS) && turn <= MAXTURN);
-                */
+                } while (turn <= 5);
+                // } while (!fracsim.diff_relative(premat, EPS) && turn <= MAXTURN);
             }
             /*
             // create similarity matrix
@@ -243,10 +293,16 @@ int main(int argc, char* argv[]) {
         }
 
         if (partition_method == "hdrf") {
-            DependencyGraph dependency_graph(graph_1, graph_2, num_partitions, initializer_type);
+            DependencyGraph dependency_graph(graph_1, graph_2, num_partitions, initializer_type, simulation_type);
             dependency_graph.worker_receive_partition(graph_1, graph_2);
             dependency_graph.worker_receive_partition_record(graph_2);
             dependency_graph.worker_initialize(graph_1, graph_2);
+
+            int copy_values;
+            while (true) {
+                dependency_graph.worker_copy_values();
+                dependency_graph.worker_compute(graph_1, graph_2, w_i, w_o, w_l, label_constrainted);
+            }
             /*
             // printf("Worker processor %s, rank %d out of %d processors\n", processor_name, task_id, num_tasks);
             MPI_Status status;
