@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mpi.h>
+#include <omp.h>
 
 #include <boost/dynamic_bitset.hpp>
 #include <iomanip>
@@ -25,6 +26,10 @@
 #define WORKER_SYNCHRONIZE_COMPLETE 12
 #define FROM_MASTER_AGGRE 13
 #define WORKER_AGGRE_COMPLETE 14
+#define QUERY_PARTITION_RECORD 15
+#define ANSWER_PARTITION_RECORDD 16
+#define QUERY_VALUE 17
+#define ANSWER_VALUE 18
 
 using namespace std;
 
@@ -63,9 +68,11 @@ class DependencyGraph {
     void worker_receive_partition(GraphNL& graph_1, GraphNL& graph_2);
     void worker_initialize(GraphNL& graph_1, GraphNL& graph_2);
     void distribute_partition_record();
+    void worker_random_partition(GraphNL& graph_1, GraphNL& graph_2);
     void worker_receive_partition_record(GraphNL& graph_2);
     void worker_copy_values();
     void worker_compute(GraphNL& graph_1, GraphNL& graph_2, float w_i, float w_o, float w_l, string label_constrainted);
+    void worker_random_compute(GraphNL& graph_1, GraphNL& graph_2, float w_i, float w_o, float w_l, string label_constrainted);
 };
 
 // eg.

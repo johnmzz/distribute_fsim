@@ -475,6 +475,7 @@ void DependencyGraph::worker_initialize(GraphNL& graph_1, GraphNL& graph_2) {
         print_label_mat();
     }
     */
+
     int intialization_complete = 1;
     // printf("Worker processor %s, rank %d out of %d processors initialization completed.\n", processor_name, task_id, num_tasks);
     MPI_Send(&intialization_complete, 1, MPI_INT, MASTER, WORKER_INIT_COMPLETE, MPI_COMM_WORLD);
@@ -760,4 +761,120 @@ void DependencyGraph::worker_compute(GraphNL& graph_1, GraphNL& graph_2, float w
 
     int aggre_complete = 1;
     MPI_Send(&aggre_complete, 1, MPI_INT, MASTER, WORKER_AGGRE_COMPLETE, MPI_COMM_WORLD);
+}
+
+void DependencyGraph::worker_random_partition(GraphNL& graph_1, GraphNL& graph_2) {
+
+    int num_tasks, task_id, name_len;
+    char processor_name[MPI_MAX_PROCESSOR_NAME];
+    MPI_Comm_size(MPI_COMM_WORLD, &num_tasks);
+    MPI_Comm_rank(MPI_COMM_WORLD, &task_id);
+    MPI_Get_processor_name(processor_name, &name_len);
+    MPI_Status status;
+    int num_workers = num_tasks - 1;
+    int64_t count = 0;
+
+    uint32_t avg_row, rows, extra;
+    avg_row = graph_1.get_num_vertices() / num_workers;
+    extra = graph_1.get_num_vertices() % num_workers;
+    rows = (task_id <= extra) ? avg_row + 1 : avg_row;
+    sim_values_.resize(graph_1.get_num_vertices());
+
+    uint32_t offset;
+    if (task_id <= extra) {
+        offset = (rows + 1) * (task_id - 1);
+    } else {
+        offset = ((rows + 1) * extra + rows * (task_id - extra - 1));
+    }
+
+    for (uint32_t i = offset; i < offset+rows; i++) {
+        for (uint32_t j = 0; j < graph_2.get_num_vertices(); j++) {
+            if (sim_values_[i].find(j) == sim_values_[i].end()) {
+                sim_values_[i].insert({j, 0.0});
+                count++;
+            }
+        }
+    }
+    /*
+    if (task_id == 4) {
+        cout << sim_values_.size() << endl;
+        for (int i = 0; i < sim_values_.size(); i++) {
+            cout << i << ": ";
+            for (auto v : sim_values_[i]) {
+                cout << "(" << v.first << "," << v.second << "), ";
+            }
+            cout << endl;
+        }
+    }
+    */
+    MPI_Send(&count, 1, MPI_INT64_T, MASTER, WORKER_RECEIVED_PARTITION, MPI_COMM_WORLD);
+}
+
+void DependencyGraph::worker_random_compute(GraphNL& graph_1, GraphNL& graph_2, float w_i, float w_o, float w_l, string label_constrainted){
+    int num_tasks, task_id, name_len;
+    char processor_name[MPI_MAX_PROCESSOR_NAME];
+    MPI_Comm_size(MPI_COMM_WORLD, &num_tasks);
+    MPI_Comm_rank(MPI_COMM_WORLD, &task_id);
+    MPI_Get_processor_name(processor_name, &name_len);
+    MPI_Status status;
+    int num_workers = num_tasks - 1;
+    uint64_t node_pairs_per_part = node_pairs_count_ / num_workers;
+    uint64_t extra = node_pairs_count_ % num_workers;
+    uint64_t num_receive = (task_id <= extra) ? node_pairs_per_part + 1 : node_pairs_per_part;
+
+    uint64_t offset;
+    if (task_id <= extra) {
+        offset = (node_pairs_per_part + 1) * (task_id - 1);
+    } else {
+        offset = ((node_pairs_per_part + 1) * extra + node_pairs_per_part * (task_id - extra - 1));
+    }
+    uint32_t u_offset = offset / graph_2.get_num_vertices();
+
+    int start_compute;
+    MPI_Recv(&start_compute, 1, MPI_INT, MASTER, FROM_MASTER_START_COMPUTE, MPI_COMM_WORLD, &status);
+    // printf("Worker processor %s, rank %d out of %d processors start computing...\n", processor_name, task_id);
+
+    int num_threads = 0;
+    int thread_id = 0;
+    #pragma omp parallel default(shared) private(thread_id, num_threads) num_threads(2)
+    {
+        num_threads = omp_get_num_threads();
+        thread_id = omp_get_thread_num();
+        int tmp = 0;
+
+        // Calculation thread
+        if (thread_id == 0) {
+            MPI_Status t0_status;
+            vector<uint32_t> in_degree_vec1 = graph_1.get_in_degree_vec();
+            vector<uint32_t> out_degree_vec1 = graph_1.get_out_degree_vec();
+            vector<uint32_t> in_degree_vec2 = graph_2.get_in_degree_vec();
+            vector<uint32_t> out_degree_vec2 = graph_2.get_out_degree_vec();
+
+            for (int worker = 1; worker < num_tasks; worker++) {
+                if (worker == task_id) continue;
+                for (int j = 0; j < 2; j++) {
+                    MPI_Send(&task_id, 1, MPI_INT, worker, QUERY_VALUE, MPI_COMM_WORLD);
+                    MPI_Recv(&tmp, 1, MPI_INT, worker, ANSWER_VALUE, MPI_COMM_WORLD, &t0_status);
+                    a[worker-1][j] = tmp;
+                }
+            }
+
+            //printf("Thread %d on worker processor %s, rank %d out of %d processors\n", thread_id, processor_name, task_id, num_tasks);
+            int finish = 1;
+            MPI_Send(&finish, 1, MPI_INT, MASTER, WORKER_COMPUTE_COMPLETE, MPI_COMM_WORLD);
+        }
+
+        // Listenner thread
+        else {
+            MPI_Status t1_status;
+            while (true) {
+                MPI_Recv(&tmp, 1, MPI_INT, MPI_ANY_SOURCE, QUERY_VALUE, MPI_COMM_WORLD, &t1_status);
+                if (t1_status.MPI_SOURCE == MASTER) break;
+                MPI_Send(&task_id, 1, MPI_INT, t1_status.MPI_SOURCE, ANSWER_VALUE, MPI_COMM_WORLD);
+            }
+            //printf("Thread %d on worker processor %s, rank %d out of %d processors, finished listenning.\n", thread_id, processor_name, task_id, num_tasks);
+            int finish = 1;
+            MPI_Send(&finish, 1, MPI_INT, MASTER, WORKER_COMPUTE_COMPLETE, MPI_COMM_WORLD);
+        }
+    }
 }
